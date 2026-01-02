@@ -1,0 +1,194 @@
+"use client";
+
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  useSuspenseEntities,
+  useRemoveEntity,
+  useEntitiesParams,
+} from "../hooks/use-entities";
+import { Pencil, Trash2, Search } from "lucide-react";
+import Link from "next/link";
+import { PATH_BUILDERS } from "@/lib/constants";
+import { useState, useEffect, useTransition } from "react";
+import { useDebounce } from "react-use";
+import { EntityPagination } from "@/components/entity-pagination";
+
+export const EntitiesList = () => {
+  const { data } = useSuspenseEntities();
+  const { mutate: removeEntity, isPending } = useRemoveEntity();
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState<string | null>(null);
+  const [params, setParams] = useEntitiesParams();
+  const [searchValue, setSearchValue] = useState(params.search);
+  const [isPendingTransition, startTransition] = useTransition();
+
+  // Debounce search value by 500ms
+  const [debouncedSearchValue, setDebouncedSearchValue] = useState(searchValue);
+
+  useDebounce(
+    () => {
+      setDebouncedSearchValue(searchValue);
+    },
+    500,
+    [searchValue]
+  );
+
+  // Update URL params when debounced value changes
+  useEffect(() => {
+    startTransition(() => {
+      setParams({ search: debouncedSearchValue, page: params.page ?? 1 });
+    });
+  }, [debouncedSearchValue, setParams, startTransition]);
+
+  // Sync local search value with URL params on mount/navigation
+  useEffect(() => {
+    setSearchValue(params.search);
+  }, [params.search]);
+
+  const handleDelete = (id: string) => {
+    setDeletingId(id);
+    removeEntity(
+      { id },
+      {
+        onSettled: () => {
+          setDeletingId(null);
+          setDeleteDialogOpen(null);
+        },
+      }
+    );
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+          <Input
+            type="search"
+            placeholder="Search entities..."
+            value={searchValue}
+            onChange={(e) => setSearchValue(e.target.value)}
+            className="pl-9"
+          />
+        </div>
+      </div>
+
+      {!data.entities.length ? (
+        <div className="text-center py-12">
+          <p className="text-muted-foreground text-lg">
+            {params.search
+              ? `No entities found matching "${params.search}"`
+              : "No entities found. Create your first entity to get started!"}
+          </p>
+        </div>
+      ) : (
+        <>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Brand</TableHead>
+                <TableHead>Model</TableHead>
+                <TableHead>Description</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.entities.map((entity) => (
+                <TableRow key={entity.id}>
+                  <TableCell className="font-medium">{entity.name}</TableCell>
+                  <TableCell>{entity.brand}</TableCell>
+                  <TableCell>{entity.model}</TableCell>
+                  <TableCell className="max-w-xs truncate">
+                    {entity.description}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-2">
+                      <Link href={PATH_BUILDERS.ENTITY.detailsView(entity.id)}>
+                        <Button variant="ghost" size="icon-sm">
+                          <Pencil className="size-4" />
+                        </Button>
+                      </Link>
+
+                      <Dialog
+                        open={deleteDialogOpen === entity.id}
+                        onOpenChange={(open) =>
+                          setDeleteDialogOpen(open ? entity.id : null)
+                        }
+                      >
+                        <DialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            disabled={isPending && deletingId === entity.id}
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                          <DialogHeader>
+                            <DialogTitle>Delete Entity</DialogTitle>
+                            <DialogDescription>
+                              Are you sure you want to delete &quot;
+                              {entity.name}
+                              &quot;? This action cannot be undone.
+                            </DialogDescription>
+                          </DialogHeader>
+                          <DialogFooter>
+                            <Button
+                              variant="outline"
+                              onClick={() => setDeleteDialogOpen(null)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              onClick={() => handleDelete(entity.id)}
+                              disabled={isPending && deletingId === entity.id}
+                            >
+                              Delete
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+
+          <EntityPagination
+            page={data.pagination.page}
+            pageSize={data.pagination.pageSize}
+            totalCount={data.pagination.total}
+            totalPages={data.pagination.totalPages}
+            hasNextPage={data.pagination.page < data.pagination.totalPages}
+            hasPreviousPage={data.pagination.page > 1}
+            disabled={isPendingTransition}
+            onPageChange={(page) => setParams({ page })}
+            onPageSizeChange={(pageSize) => setParams({ pageSize, page: 1 })}
+          />
+        </>
+      )}
+    </div>
+  );
+};
