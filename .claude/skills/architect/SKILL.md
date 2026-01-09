@@ -106,6 +106,108 @@ features/[feature-name]/
 └── types.ts                # Shared types
 ```
 
+## Critical Implementation Patterns
+
+### ⚠️ Server-Side Prefetch Pattern (REQUIRED)
+
+**ALWAYS use this pattern for prefetch functions:**
+
+```typescript
+// src/features/[feature]/server/prefetch.ts
+import type { inferInput } from "@trpc/tanstack-react-query";
+import { prefetch, trpc } from "@/trpc/server";
+
+// Use inferInput to get type-safe input from tRPC procedure
+type PrefetchItemsInput = inferInput<typeof trpc.feature.getMany>;
+
+// MUST be async function
+// MUST use prefetch() helper from @/trpc/server
+// MUST use .queryOptions() method
+export async function prefetchItems(input: PrefetchItemsInput) {
+  return prefetch(trpc.feature.getMany.queryOptions(input));
+}
+```
+
+**❌ DON'T do this (old pattern):**
+```typescript
+// ❌ Missing inferInput, missing async, using wrong api import
+export const prefetchItems = (params: Params) => {
+  void api.feature.getMany.prefetch(params);
+};
+```
+
+### ⚠️ Client Hooks Pattern (REQUIRED)
+
+**ALWAYS use this pattern for client-side tRPC hooks:**
+
+```typescript
+// src/features/[feature]/hooks/use-items.ts
+"use client";
+
+import { useTRPC } from "@/trpc/client";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+
+// ✅ Define types inline - DON'T import server-side param types
+type ItemsParams = {
+  page: number;
+  pageSize: number;
+};
+
+export function useItems(params: ItemsParams) {
+  const trpc = useTRPC(); // ✅ Use useTRPC() hook
+  return useQuery(trpc.feature.getMany.queryOptions(params)); // ✅ Use useQuery with .queryOptions()
+}
+
+export function useCreateItem() {
+  const trpc = useTRPC(); // ✅ Get trpc instance
+  const queryClient = useQueryClient(); // ✅ Get queryClient for invalidation
+
+  return useMutation( // ✅ Use useMutation directly
+    trpc.feature.create.mutationOptions({ // ✅ Use .mutationOptions()
+      onSuccess: (data) => {
+        toast.success("Item created");
+        // ✅ Invalidate using queryClient and .queryOptions()
+        queryClient.invalidateQueries(
+          trpc.feature.getMany.queryOptions({ page: 1, pageSize: 20 })
+        );
+      },
+      onError: (error) => {
+        toast.error(error.message);
+      },
+    })
+  );
+}
+```
+
+**❌ DON'T do this (old pattern):**
+```typescript
+"use client";
+
+import { trpc } from "@/trpc/client"; // ❌ Wrong import
+import type { Params } from "../server/params"; // ❌ Don't import server types
+
+export function useItems(params: Params) { // ❌ Server type in client
+  return trpc.feature.getMany.useQuery(params); // ❌ Direct .useQuery()
+}
+
+export function useCreateItem() {
+  const utils = trpc.useUtils(); // ❌ Old pattern
+  return trpc.feature.create.useMutation({ // ❌ Direct .useMutation()
+    onSuccess: () => {
+      utils.feature.getMany.invalidate(); // ❌ Old invalidation pattern
+    },
+  });
+}
+```
+
+### Key Rules
+
+1. **Prefetch files**: Use `inferInput`, async functions, `prefetch()` helper, and `.queryOptions()`
+2. **Client hooks**: Use `useTRPC()`, explicit `useQuery`/`useMutation`, `queryClient.invalidateQueries()`
+3. **Type separation**: NEVER import server-side param types (from `server/params.ts`) into client hooks
+4. **Toast notifications**: Include user feedback with `toast.success()` and `toast.error()`
+
 ## Design Patterns for Common Scenarios
 
 ### 1. Adding a New CRUD Feature
@@ -311,16 +413,20 @@ export async function featureParamsLoader(searchParams: Promise<any>) {
 #### E. Create Prefetch Helper
 ```typescript
 // src/features/feature-name/server/prefetch.ts
-import { api } from "@/trpc/server";
-import type { FeatureParams } from "./params";
+import type { inferInput } from "@trpc/tanstack-react-query";
+import { prefetch, trpc } from "@/trpc/server";
 
-export const prefetchFeatures = (params: FeatureParams) => {
-  void api.feature.getMany.prefetch(params);
-};
+type PrefetchFeaturesInput = inferInput<typeof trpc.feature.getMany>;
 
-export const prefetchFeature = (id: string) => {
-  void api.feature.getOne.prefetch({ id });
-};
+export async function prefetchFeatures(input: PrefetchFeaturesInput) {
+  return prefetch(trpc.feature.getMany.queryOptions(input));
+}
+
+type PrefetchFeatureInput = inferInput<typeof trpc.feature.getOne>;
+
+export async function prefetchFeature(input: PrefetchFeatureInput) {
+  return prefetch(trpc.feature.getOne.queryOptions(input));
+}
 ```
 
 #### F. Create Client Hooks
@@ -328,43 +434,88 @@ export const prefetchFeature = (id: string) => {
 // src/features/feature-name/hooks/use-features.ts
 "use client";
 
-import { trpc } from "@/trpc/client";
-import type { FeatureParams } from "../server/params";
+import { useTRPC } from "@/trpc/client";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
-export function useFeatures(params: FeatureParams) {
-  return trpc.feature.getMany.useQuery(params);
+// Define params type inline - don't import server-side types into client
+type FeaturesParams = {
+  page: number;
+  pageSize: number;
+  search: string;
+};
+
+export function useFeatures(params: FeaturesParams) {
+  const trpc = useTRPC();
+  return useQuery(trpc.feature.getMany.queryOptions(params));
 }
 
-export function useFeature(id: string) {
-  return trpc.feature.getOne.useQuery({ id });
+export function useFeature(id: string | null, enabled: boolean = true) {
+  const trpc = useTRPC();
+  return useQuery({
+    ...trpc.feature.getOne.queryOptions({ id: id || "" }),
+    enabled: enabled && !!id,
+  });
 }
 
 export function useCreateFeature() {
-  const utils = trpc.useUtils();
-  return trpc.feature.create.useMutation({
-    onSuccess: () => {
-      utils.feature.getMany.invalidate();
-    },
-  });
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+
+  return useMutation(
+    trpc.feature.create.mutationOptions({
+      onSuccess: (data) => {
+        toast.success(`Feature "${data.name}" created successfully`);
+        queryClient.invalidateQueries(
+          trpc.feature.getMany.queryOptions({ page: 1, pageSize: 20, search: "" })
+        );
+      },
+      onError: (error) => {
+        toast.error(`Failed to create feature: ${error.message}`);
+      },
+    })
+  );
 }
 
 export function useUpdateFeature() {
-  const utils = trpc.useUtils();
-  return trpc.feature.update.useMutation({
-    onSuccess: () => {
-      utils.feature.getMany.invalidate();
-      utils.feature.getOne.invalidate();
-    },
-  });
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+
+  return useMutation(
+    trpc.feature.update.mutationOptions({
+      onSuccess: (data) => {
+        toast.success(`Feature "${data.name}" updated successfully`);
+        queryClient.invalidateQueries(
+          trpc.feature.getMany.queryOptions({ page: 1, pageSize: 20, search: "" })
+        );
+        queryClient.invalidateQueries(
+          trpc.feature.getOne.queryOptions({ id: data.id })
+        );
+      },
+      onError: (error) => {
+        toast.error(`Failed to update feature: ${error.message}`);
+      },
+    })
+  );
 }
 
 export function useDeleteFeature() {
-  const utils = trpc.useUtils();
-  return trpc.feature.remove.useMutation({
-    onSuccess: () => {
-      utils.feature.getMany.invalidate();
-    },
-  });
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+
+  return useMutation(
+    trpc.feature.remove.mutationOptions({
+      onSuccess: () => {
+        toast.success("Feature deleted successfully");
+        queryClient.invalidateQueries(
+          trpc.feature.getMany.queryOptions({ page: 1, pageSize: 20, search: "" })
+        );
+      },
+      onError: (error) => {
+        toast.error(`Failed to delete feature: ${error.message}`);
+      },
+    })
+  );
 }
 ```
 
